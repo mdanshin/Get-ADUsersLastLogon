@@ -8,6 +8,14 @@
   Получает значение полей LastLogon и lastLogonTimestamp, выбирает наибольшее значение,
   и результат помещает в поле LastLogon. Результат выгружается в файл.
 
+  ВАЖНО:
+
+  При LDAP авторизации:
+
+  BadLogonCount - меняется
+  lastlogon и lastLogonTimeStamp - меняется
+  logoncount - НЕ меняется
+
   .PARAMETER ADGroupName
   Указывает на группу Active Directory, откуда будет получен список пользователей.
 
