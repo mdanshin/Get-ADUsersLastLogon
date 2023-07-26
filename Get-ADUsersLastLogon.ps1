@@ -190,6 +190,9 @@ $ADUsers | Export-Csv `
 Write-Log( "Данные сохранены в файл $ReportPath" )
 Write-Log( "Log сохранён в файл' $LogFile" )
 
+# Отображение результата в консоле
+$ADUsers | Format-Table
+
 # Вывести ошибки (не найденных пользователей)
 if (![string]::IsNullOrEmpty($NotFoundedUsers)) {
     Write-Log('The following users were not found in Active Directory:')
