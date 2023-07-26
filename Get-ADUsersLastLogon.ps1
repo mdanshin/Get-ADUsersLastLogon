@@ -1,4 +1,4 @@
-﻿<#
+<#
   .SYNOPSIS
   Получение информации о последнем входе пользователя Active Directory
 
@@ -52,6 +52,7 @@
   Последняя версия скрипта расположена по ссылке: https://github.com/mdanshin/Get-ADUsersLastLogon
 #>
 
+# Подключаем параметры, необходимые для работы скрипта
 Param (
     [Parameter(Mandatory = $true,
         ParameterSetName = "Group")]
@@ -64,32 +65,84 @@ Param (
     $UsersLoginsFileName
 )
 
+# Формирование имени выходного файла с данными пользователей
 $ReportFileName = "ADUsers_{0:dd}{0:MM}{0:yy}.csv" -f [datetime]::Parse((Get-Date))
 $ReportPath = Join-Path -Path (Get-Location).Path -ChildPath $ReportFileName
+
+# Формирование пути к файлу с пользователями
 $UsersLoginsPath = (Join-Path -Path (Get-Location).Path -ChildPath $UsersLoginsFileName)
 
-# Пусть к log-файлу
-$LogPath = "C:\Windows\Temp"
+# Путь к log-файлу
+# $LogPath = "C:\Windows\Temp"
 
-# Расскомментироваь, если нужно писать лог в отдельные файлы, с timestamp в имени файла
-#$LogName = "Get-ADUsersLastLogon_{0:G}.log" -f [int][double]::Parse((Get-Date -UFormat %s))
+# Расскомментировать, если нужно писать лог в отдельные файлы, с timestamp в имени файла
+# Например: Get-ADUsersLastLogon_1690400223.log
+# $LogName = "Get-ADUsersLastLogon_{0:G}.log" -f [int][double]::Parse((Get-Date -UFormat %s))
 
-# Писать лог в единый файл
+# Расскомментировать, если нужно писать лог в единый файл
+# Например: Get-ADUsersLastLogon.log
 $LogName = "Get-ADUsersLastLogon.log"
 
-$LogFile = Join-Path -Path $LogPath -ChildPath $LogName
+if ($LogPath -ne $null) {
+  $LogFile = Join-Path -Path $LogPath -ChildPath $LogName
+} else {
+  $LogFile = $LogName
+}
 
+# Функция для получения данных о последнем входе пользователя на контроллере домена
+function Get-ADUserLastLogonOnDC {
+    param (
+        [string]$Username
+    )
+
+    # Получение всех контроллеров домена
+    $domainControllers = Get-ADDomainController -Filter *
+    $lastLogons = @()
+
+    # Перебор всех контроллеров домена для получения информации о пользователе
+    foreach ($dc in $domainControllers) {
+        $dcName = $dc.HostName
+        $user = Get-ADUser -Identity $Username -Server $dcName -Properties LastLogon, LastLogonTimestamp -ErrorAction SilentlyContinue
+
+        if ($user) {
+            $lastLogon1 = $user.LastLogon
+            $lastLogon2 = $user.LastLogonTimestamp
+
+            # Выбор наибольшего значения из двух полей lastLogon и lastLogonTimestamp
+            if ($lastLogon1 -gt $lastLogon2) {
+                $lastLogon = $lastLogon1
+            } elseif ($lastLogon2 -ne 0) {
+                $lastLogon = $lastLogon2
+            } else {
+                $lastLogon = $lastLogon1
+            }
+
+            # Добавление информации о последнем входе пользователя в массив
+            $lastLogons += [PSCustomObject]@{
+                Username = $Username
+                LastLogon = [DateTime]::FromFileTime($lastLogon)
+                DomainController = $dcName
+            }
+        }
+    }
+
+    return $lastLogons
+}
+
+# Функция для записи информации в лог
 function Write-Log {
     Param ([string]$Entry)
     $TimeStamp = (Get-Date).toString("yyyy/MM/dd HH:mm:ss")
     $LogMessage = "$TimeStamp $Entry"
+
     Add-Content $LogFile -value $LogMessage -Encoding UTF8
     Write-Host $LogMessage -ForegroundColor Cyan
 }
 
+# Если указан параметр ADGroupName, то получаем пользователей из группы
 if ($ADGroupName) {
     try {
-        # Получить пользователей из группы
+        # Получить пользователей из группы Active Directory
         $ADGroup = Get-ADGroup $ADGroupName -ErrorAction Stop
         Write-Log("Получение данных о пользователях из группы $ADGroupName")
         $Users = Get-ADGroupMember -Identity $ADGroup
@@ -97,18 +150,18 @@ if ($ADGroupName) {
         $UsersLogins = $Users.SamAccountName
     }
     catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
-        Write-Log("Группа $ADGroupName не найдена Active Directory")
-        throw "Группа $ADGroupName не найдена Active Directory"
+        Write-Log("Группа $ADGroupName не найдена в Active Directory")
+        throw "Группа $ADGroupName не найдена в Active Directory"
     }
 }
 else {
-    # Получить пользователей из файла
+    # Если указан параметр UsersLoginsFileName, то получаем пользователей из файла
     Write-Log("Получение данных о пользователях из файла $UsersLoginsPath")
 
     try {
         $Users = (Import-Csv -Path $UsersLoginsFileName)
         $UsersLogins = $Users.SamAccountName
-        Write-Log("Найдено пользователей: $($UsersLogins.count)" )
+        Write-Log("Найдено пользователей: $($UsersLogins.count)")
     } catch [System.IO.FileNotFoundException]{
         Write-Log("Файл $UsersLoginsPath не найден")
         throw "Файл $UsersLoginsPath не найден"
@@ -117,54 +170,18 @@ else {
     }
 }
 
-# Получить по пользователям информацию из AD
-Write-Log( 'Начинаем сбор данных о пользователях Active Directory' )
-$ADUsers = $UsersLogins | `
-    Get-ADUser -Properties * -ErrorVariable NotFoundedUsers | `
-    Select-Object `
-    Name, `
-    SamAccountName, `
-    @{
-        N = 'pwdLastSet';
-        E = {
-            if ($null -eq $_.pwdLastSet -or $_.pwdLastSet -eq 0 ) {
-                'NULL'
-            }
-            else {
-                [DateTime]::FromFileTime($_.pwdLastSet )
-            }
-        }
-    },
-    @{
-        # The last time the user logged on. This value is stored as a large
-        # integer that represents the number of 100-nanosecond intervals since
-        # January 1, 1601 (UTC). A value of 0 or 0x7FFFFFFFFFFFFFFF (9223372036854775807)
-        # means that the last logon time is unknown.
-        # w32tm.exe /ntte 9223372036854775807
-        Name       = 'LastLogon';
-        Expression =
-        {
-            if ( ($null -eq $_.LastLogon -And $null -eq $_.lastLogonTimestamp) `
-                    -or ($_.LastLogon -eq 0 -And $_.lastLogonTimestamp -eq 0) `
-                    -or ($_.LastLogon -eq 9223372036854775807 -And $_.lastLogonTimestamp -eq 9223372036854775807) `
-                    -or ($_.LastLogon -eq '1/1/1601 3:00:00 AM' -And $_.lastLogonTimestamp -eq '1/1/1601 3:00:00 AM') `
-                    -or ($_.LastLogon -eq 0 -And $null -eq $_.lastLogonTimestamp) `
-                    -or ($null -eq $_.LastLogon -And $_.lastLogonTimestamp -eq 0) `
-            ) {
-                'NULL'
-            }
-            else {
-                if ($_.LastLogon -gt $_.lastLogonTimestamp) {
-                    [DateTime]::FromFileTime($_.LastLogon )
-                }
-                else {
-                    [DateTime]::FromFileTime($_.lastLogonTimestamp)
-                }
-            }
-        }
-    }
+# Получить по пользователям информацию из Active Directory
+Write-Log('Начинаем сбор данных о пользователях Active Directory')
+$ADUsers = $UsersLogins | ForEach-Object {
+    $userLogons = Get-ADUserLastLogonOnDC -Username $_
 
-# Выгрузить в PST
+    if ($userLogons.Count -gt 0) {
+        $latestLogon = $userLogons | Sort-Object -Property LastLogon | Select-Object -Last 1
+        $latestLogon
+    }
+}
+
+# Выгрузить в CSV
 $ADUsers | Export-Csv `
     -Path $ReportFileName `
     -Encoding UTF8 `
